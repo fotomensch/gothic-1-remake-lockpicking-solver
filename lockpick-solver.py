@@ -1,248 +1,438 @@
 #!/usr/bin/env python3
 """
-Schieberpuzzle-Löser  –  BFS / A* mit tkinter-GUI
-Starte mit:  python3 schieberpuzzle.py
+Schieberpuzzle-Löser  –  BFS / A*   mit tkinter GUI
+Start:  python3 schieberpuzzle.py
 """
-
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 from collections import deque
-import heapq
-import threading
-import time
+import heapq, threading, time
 
-# ── Farben ────────────────────────────────────────────────────────────────────
-BG          = "#1a1a2e"
-PANEL       = "#16213e"
-CARD        = "#0f3460"
-ACCENT      = "#e94560"
-ACCENT2     = "#7b5ea7"
-FG          = "#eaeaea"
-FG_DIM      = "#7788aa"
-PIN_OK      = "#44cc88"
-PIN_WRONG   = "#e94560"
-HOLE_FILL   = "#243352"
-TARGET_OUT  = "#7b5ea7"
+# ─── Puzzle-Konstanten ────────────────────────────────────────────────────────
+HOLES  = 7      # Immer 7 Löcher pro Element
+TARGET = 3      # 0-basiert = Position 4 = Mitte
 
+# ─── Farben ───────────────────────────────────────────────────────────────────
+BG    = "#12131a"
+PANEL = "#1c1f2e"
+CARD  = "#252838"
+FG    = "#dde2f0"
+FG_D  = "#3c4260"
+FG_M  = "#7880a0"
+ACNT  = "#e94560"
 
-# ── Lösungslogik ──────────────────────────────────────────────────────────────
+EC = [                 # Element-Farben E1–E7
+    "#e94560",         # Rot
+    "#f0a030",         # Amber
+    "#3dcc7e",         # Grün
+    "#4488ff",         # Blau
+    "#b844dd",         # Violett
+    "#ff7744",         # Orange
+    "#1ec8c8",         # Teal
+]
 
-def build_effects(n: int, coupling: dict) -> dict:
-    """coupling: {(mover, affected): 'same'|'opposite'}  →  effects-dict"""
-    effects: dict = {i: [] for i in range(n)}
-    for (mover, affected), direction in coupling.items():
-        effects[mover].append((affected, 1 if direction == "same" else -1))
-    return effects
+# Kopplung-Zustände  0=keine  1=gleich  2=entgegen
+CS = {
+    0: (CARD,     FG_D,     FG_M),
+    1: ("#143322", "#3dcc7e", "#3dcc7e"),
+    2: ("#301414", "#e94560", "#e94560"),
+}
 
+# ─── Übersetzungen ────────────────────────────────────────────────────────────
+T = {
+"de": dict(
+    title="Schieberpuzzle-Löser", lang="EN",
+    n_elem="Anzahl Elemente", start_pos="Startposition (1–7)",
+    coupling="Kopplungsregeln", mover=" bewegt →",
+    c0="—", c1="↑↑  gleich", c2="↑↓  entgegen",
+    solve="▶   Lösung berechnen", reset="↺   Zurücksetzen",
+    sol="Lösung", init="Ausgangszustand",
+    right="rechts →", left="← links",
+    no_sol="Keine Lösung gefunden.",
+    no_sol2="Mögliche Ursachen: Puzzle unlösbar oder Suchraum zu groß.",
+    ready="Bereit.", run="Suche läuft …",
+    steps="Schritte", step_lbl="Schrittliste",
+    step="Schritt", of="von", x="×",
+    err="Fehler", warn="Warnung",
+    step_n="Schritt {i} / {n}  —  E{e} {d}",
+),
+"en": dict(
+    title="Sliding Puzzle Solver", lang="DE",
+    n_elem="Number of elements", start_pos="Start position (1–7)",
+    coupling="Coupling rules", mover=" moves →",
+    c0="—", c1="↑↑  same", c2="↑↓  opposite",
+    solve="▶   Find Solution", reset="↺   Reset",
+    sol="Solution", init="Initial state",
+    right="right →", left="← left",
+    no_sol="No solution found.",
+    no_sol2="Possible causes: puzzle unsolvable or search space too large.",
+    ready="Ready.", run="Searching …",
+    steps="steps", step_lbl="Step list",
+    step="Step", of="of", x="×",
+    err="Error", warn="Warning",
+    step_n="Step {i} / {n}  —  E{e} {d}",
+),
+}
 
-def apply_move(state: tuple, elem: int, direction: int,
-               effects: dict, holes: list) -> tuple | None:
-    """
-    direction: +1 = Element nach rechts (Stift-Index sinkt)
-               -1 = Element nach links  (Stift-Index steigt)
-    Gibt neuen Zustand zurück oder None wenn ungültig.
-    """
-    new = list(state)
-    moves = [(elem, direction)]
-    for (aff, sign) in effects[elem]:
-        moves.append((aff, direction * sign))
-    for idx, d in moves:
-        p = new[idx] - d
-        if p < 0 or p >= holes[idx]:
+# ─── Lösungslogik ─────────────────────────────────────────────────────────────
+def build_effects(n, couplings):
+    ef = {i: [] for i in range(n)}
+    for (a, b), v in couplings.items():
+        ef[a].append((b, 1 if v == 1 else -1))
+    return ef
+
+def apply_move(state, elem, d, ef, n):
+    s = list(state)
+    for idx, sign in [(elem, d)] + [(b, d*sg) for b, sg in ef[elem]]:
+        p = s[idx] - sign
+        if p < 0 or p >= HOLES:
             return None
-        new[idx] = p
-    return tuple(new)
+        s[idx] = p
+    return tuple(s)
 
+def heuristic(state, target, n):
+    return sum(abs(state[i] - target) for i in range(n))
 
-def heuristic(state: tuple, targets: list) -> int:
-    return sum(abs(state[i] - targets[i]) for i in range(len(state)))
-
-
-def solve_bfs(start, targets, effects, holes, max_states=1_200_000):
-    goal = tuple(targets)
+def solve_bfs(start, ef, n, mx=1_400_000):
+    goal = tuple([TARGET] * n)
     start = tuple(start)
     if start == goal:
         return []
-    n = len(start)
-    queue: deque = deque([(start, [])])
-    visited: set = {start}
-    while queue:
-        if len(visited) > max_states:
-            return None                      # Zustandsraum zu groß → A*
-        state, path = queue.popleft()
-        for elem in range(n):
-            for d in (+1, -1):
-                ns = apply_move(state, elem, d, effects, holes)
-                if ns and ns not in visited:
-                    np_ = path + [(elem, d)]
+    q = deque([(start, [])])
+    vis = {start}
+    while q:
+        if len(vis) > mx:
+            return None
+        st, path = q.popleft()
+        for e in range(n):
+            for d in (1, -1):
+                ns = apply_move(st, e, d, ef, n)
+                if ns and ns not in vis:
+                    np_ = path + [(e, d)]
                     if ns == goal:
                         return np_
-                    visited.add(ns)
-                    queue.append((ns, np_))
-    return None                              # kein Weg gefunden
+                    vis.add(ns)
+                    q.append((ns, np_))
+    return None
 
-
-def solve_astar(start, targets, effects, holes, max_steps=600_000):
-    goal = tuple(targets)
+def solve_astar(start, ef, n, mx=800_000):
+    goal = tuple([TARGET] * n)
     start = tuple(start)
     if start == goal:
         return []
-    n = len(start)
-    heap = [(heuristic(start, targets), 0, start, [])]
-    best: dict = {start: 0}
+    h0 = heuristic(start, TARGET, n)
+    heap = [(h0, 0, start, [])]
+    best = {start: 0}
     steps = 0
-    while heap and steps < max_steps:
-        f, g, state, path = heapq.heappop(heap)
+    while heap and steps < mx:
+        _, g, st, path = heapq.heappop(heap)
         steps += 1
-        if state == goal:
+        if st == goal:
             return path
-        if best.get(state, 10**9) < g:
+        if best.get(st, 10**9) < g:
             continue
-        for elem in range(n):
-            for d in (+1, -1):
-                ns = apply_move(state, elem, d, effects, holes)
+        for e in range(n):
+            for d in (1, -1):
+                ns = apply_move(st, e, d, ef, n)
                 if ns is None:
                     continue
                 ng = g + 1
                 if ng < best.get(ns, 10**9):
                     best[ns] = ng
-                    h = heuristic(ns, targets)
-                    heapq.heappush(heap, (ng + h, ng, ns, path + [(elem, d)]))
+                    h = heuristic(ns, TARGET, n)
+                    heapq.heappush(heap, (ng + h, ng, ns, path + [(e, d)]))
     return None
 
+def compress(sol):
+    """Aufeinanderfolgende gleiche Züge zusammenfassen."""
+    if not sol:
+        return []
+    out = []
+    ce, cd, cnt = sol[0][0], sol[0][1], 1
+    for e, d in sol[1:]:
+        if e == ce and d == cd:
+            cnt += 1
+        else:
+            out.append((ce, cd, cnt))
+            ce, cd, cnt = e, d, 1
+    out.append((ce, cd, cnt))
+    return out
 
-# ── Hauptfenster ──────────────────────────────────────────────────────────────
 
+# ─── App ──────────────────────────────────────────────────────────────────────
 class App(tk.Tk):
+
     def __init__(self):
         super().__init__()
-        self.title("Schieberpuzzle-Löser")
+        self.lang    = "de"
+        self.n       = 4                        # Anzahl Elemente
+        self.starts  = [TARGET] * 7             # 0-basiert, default Mitte
+        self.coups   = {}                       # (i,j) → 0|1|2
+        self.solution     = None
+        self.step_states  = []
+        self.step_groups  = []                  # compressed
+        self.cur_step     = 0
+        self.effects      = None
+
+        # Widget-Referenzen für Sprachumschaltung
+        self._w = {}
+
+        self.title(self.t("title"))
         self.configure(bg=BG)
-        self.geometry("1160x820")
-        self.minsize(900, 600)
+        self.geometry("1220x860")
+        self.minsize(900, 620)
 
-        self.n_var    = tk.IntVar(value=6)
-        self.elem_cfg: list[dict] = []     # {holes, start, target}
-        self.coup_var: dict       = {}     # (i,j) → StringVar
-        self.solution : list | None = None
-        self.step_states: list    = []
-        self.effects  : dict | None = None
-        self.holes_cfg: list      = []
-        self.targets  : list      = []
-        self.cur_step : int       = 0
+        self._build()
+        self._rebuild_left()
 
-        self._build_ui()
-        self._rebuild()
+    # ── Hilfsfunktionen ───────────────────────────────────────────────────────
+    def t(self, key, **kw):
+        s = T[self.lang].get(key, key)
+        return s.format(**kw) if kw else s
 
-    # ── UI-Aufbau ─────────────────────────────────────────────────────────────
+    def ec(self, i):
+        """Element-Farbe (0-basiert)."""
+        return EC[i % len(EC)]
 
-    def _build_ui(self):
-        # Titelleiste
+    # ── Haupt-Layout ──────────────────────────────────────────────────────────
+    def _build(self):
+        # ── Kopfzeile ─────────────────────────────────────────────────────────
         hdr = tk.Frame(self, bg=BG)
-        hdr.pack(fill="x", padx=16, pady=(12, 4))
-        tk.Label(hdr, text="⚙  Schieberpuzzle-Löser",
-                 bg=BG, fg=FG, font=("Helvetica", 17, "bold")).pack(side="left")
-        tk.Label(hdr, text="BFS / A*",
-                 bg=BG, fg=FG_DIM, font=("Helvetica", 10)).pack(side="left", padx=12)
+        hdr.pack(fill="x", padx=14, pady=(10, 0))
+        self._w["title_lbl"] = tk.Label(
+            hdr, text=self.t("title"), bg=BG, fg=FG,
+            font=("Helvetica", 17, "bold"))
+        self._w["title_lbl"].pack(side="left")
 
-        # Haupt-Pane
-        pane = tk.PanedWindow(self, orient="horizontal", bg=BG,
-                              sashwidth=7, sashrelief="flat")
-        pane.pack(fill="both", expand=True, padx=10, pady=6)
+        self._w["lang_btn"] = tk.Button(
+            hdr, text=self.t("lang"), bg=CARD, fg=FG_M,
+            relief="flat", font=("Helvetica", 10, "bold"),
+            padx=10, pady=4, cursor="hand2",
+            activebackground=ACNT, activeforeground=FG,
+            command=self._toggle_lang)
+        self._w["lang_btn"].pack(side="right")
 
-        left = tk.Frame(pane, bg=BG)
-        pane.add(left, minsize=440)
-        self._build_left(left)
+        sep = tk.Frame(self, bg=FG_D, height=1)
+        sep.pack(fill="x", padx=14, pady=6)
 
-        right = tk.Frame(pane, bg=BG)
-        pane.add(right, minsize=430)
-        self._build_right(right)
+        # ── Haupt-Pane ────────────────────────────────────────────────────────
+        self.pane = tk.PanedWindow(
+            self, orient="horizontal", bg=BG,
+            sashwidth=8, sashrelief="flat")
+        self.pane.pack(fill="both", expand=True, padx=10, pady=(0, 8))
 
-    # ── Linke Spalte (Konfiguration) ──────────────────────────────────────────
+        self.left_outer = tk.Frame(self.pane, bg=BG)
+        self.pane.add(self.left_outer, minsize=480)
 
-    def _build_left(self, parent):
-        tk.Label(parent, text="Konfiguration",
-                 bg=BG, fg=ACCENT, font=("Helvetica", 12, "bold")
-                 ).pack(anchor="w", padx=6, pady=(0, 6))
+        self.right_frame = tk.Frame(self.pane, bg=BG)
+        self.pane.add(self.right_frame, minsize=420)
+        self._build_right()
 
-        # Elementanzahl
-        top = tk.Frame(parent, bg=BG)
-        top.pack(fill="x", padx=6, pady=4)
-        tk.Label(top, text="Anzahl Elemente:", bg=BG, fg=FG,
-                 font=("Helvetica", 11)).pack(side="left")
-        sp = tk.Spinbox(top, from_=2, to=10, textvariable=self.n_var,
-                        width=4, command=self._rebuild,
-                        bg=CARD, fg=FG, buttonbackground=CARD,
-                        font=("Helvetica", 11), relief="flat")
-        sp.pack(side="left", padx=8)
-        sp.bind("<Return>",    lambda _: self._rebuild())
-        sp.bind("<FocusOut>",  lambda _: self._rebuild())
+    # ── Linke Seite ───────────────────────────────────────────────────────────
+    def _rebuild_left(self):
+        for w in self.left_outer.winfo_children():
+            w.destroy()
 
-        # Scrollbarer Konfigurationsbereich
-        self.cfg_canvas = tk.Canvas(parent, bg=BG, highlightthickness=0)
-        vsb = ttk.Scrollbar(parent, orient="vertical",
-                            command=self.cfg_canvas.yview)
-        self.cfg_canvas.configure(yscrollcommand=vsb.set)
+        # Scrollbarer Canvas
+        canvas = tk.Canvas(self.left_outer, bg=BG, highlightthickness=0)
+        vsb = tk.Scrollbar(self.left_outer, orient="vertical",
+                           command=canvas.yview, bg=BG)
+        canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
-        self.cfg_canvas.pack(fill="both", expand=True, padx=6)
-        self.cfg_frame = tk.Frame(self.cfg_canvas, bg=BG)
-        self._cfg_win = self.cfg_canvas.create_window(
-            (0, 0), window=self.cfg_frame, anchor="nw")
-        self.cfg_frame.bind("<Configure>", self._on_cfg_resize)
-        self.cfg_canvas.bind("<Configure>", self._on_canvas_resize)
-        self.cfg_canvas.bind("<MouseWheel>",
-                             lambda e: self.cfg_canvas.yview_scroll(
-                                 int(-1*(e.delta/120)), "units"))
+        canvas.pack(side="left", fill="both", expand=True)
 
-        # Solve-Button
-        btn_frame = tk.Frame(parent, bg=BG)
-        btn_frame.pack(fill="x", padx=6, pady=8)
-        self.solve_btn = tk.Button(
-            btn_frame, text="▶  Lösung berechnen",
-            bg=ACCENT, fg="white", relief="flat",
-            font=("Helvetica", 12, "bold"), padx=16, pady=8,
-            activebackground="#c73050", cursor="hand2",
+        inner = tk.Frame(canvas, bg=BG)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _resize(e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        def _cw(e):
+            canvas.itemconfig(win_id, width=e.width)
+        inner.bind("<Configure>", _resize)
+        canvas.bind("<Configure>", _cw)
+        canvas.bind("<MouseWheel>",
+                    lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        PAD = 12
+
+        # ── Abschnitt: Anzahl Elemente ────────────────────────────────────────
+        self._w["n_lbl"] = self._section_head(inner, "n_elem")
+        row = tk.Frame(inner, bg=BG)
+        row.pack(fill="x", padx=PAD, pady=(0, 10))
+        self._w["n_btns"] = []
+        for v in (4, 5, 6, 7):
+            b = tk.Button(
+                row, text=str(v), width=5,
+                bg=ACNT if v == self.n else CARD,
+                fg=FG, relief="flat",
+                font=("Helvetica", 13, "bold"),
+                padx=8, pady=6, cursor="hand2",
+                command=lambda v=v: self._set_n(v))
+            b.pack(side="left", padx=4)
+            self._w["n_btns"].append((v, b))
+
+        # ── Abschnitt: Startposition ──────────────────────────────────────────
+        self._w["sp_lbl"] = self._section_head(inner, "start_pos")
+        self._start_frame = tk.Frame(inner, bg=BG)
+        self._start_frame.pack(fill="x", padx=PAD, pady=(0, 10))
+        self._build_start_rows()
+
+        # ── Abschnitt: Kopplungsregeln ────────────────────────────────────────
+        self._w["cp_lbl"] = self._section_head(inner, "coupling")
+        self._coup_frame = tk.Frame(inner, bg=BG)
+        self._coup_frame.pack(fill="x", padx=PAD, pady=(0, 10))
+        self._build_coupling()
+
+        # ── Buttons: Reset + Solve ────────────────────────────────────────────
+        btm = tk.Frame(inner, bg=BG)
+        btm.pack(fill="x", padx=PAD, pady=(6, 4))
+
+        self._w["reset_btn"] = tk.Button(
+            btm, text=self.t("reset"),
+            bg=CARD, fg=FG_M, relief="flat",
+            font=("Helvetica", 11), padx=14, pady=8, cursor="hand2",
+            activebackground="#3a1818", activeforeground=ACNT,
+            command=self._reset)
+        self._w["reset_btn"].pack(side="left", padx=(0, 8))
+
+        self._w["solve_btn"] = tk.Button(
+            btm, text=self.t("solve"),
+            bg=ACNT, fg=FG, relief="flat",
+            font=("Helvetica", 12, "bold"), padx=20, pady=8, cursor="hand2",
+            activebackground="#c73050",
             command=self._start_solve)
-        self.solve_btn.pack(fill="x")
+        self._w["solve_btn"].pack(side="left", fill="x", expand=True)
 
-        self.status_var = tk.StringVar(value="Bereit.")
-        tk.Label(parent, textvariable=self.status_var, bg=BG, fg=FG_DIM,
-                 font=("Helvetica", 9)).pack(anchor="w", padx=6)
+        self._w["status"] = tk.Label(
+            inner, text=self.t("ready"), bg=BG, fg=FG_M,
+            font=("Helvetica", 9))
+        self._w["status"].pack(anchor="w", padx=PAD, pady=(2, 8))
 
-    def _on_cfg_resize(self, _):
-        self.cfg_canvas.configure(
-            scrollregion=self.cfg_canvas.bbox("all"))
+    def _section_head(self, parent, key):
+        f = tk.Frame(parent, bg=BG)
+        f.pack(fill="x", pady=(12, 4))
+        lbl = tk.Label(f, text=self.t(key).upper(),
+                       bg=BG, fg=FG_M,
+                       font=("Helvetica", 8, "bold"), anchor="w")
+        lbl.pack(side="left", padx=12)
+        tk.Frame(f, bg=FG_D, height=1).pack(side="left", fill="x",
+                                              expand=True, padx=(6, 12))
+        return lbl
 
-    def _on_canvas_resize(self, e):
-        self.cfg_canvas.itemconfig(self._cfg_win, width=e.width)
+    # ── Startposition-Reihen ──────────────────────────────────────────────────
+    def _build_start_rows(self):
+        for w in self._start_frame.winfo_children():
+            w.destroy()
+        self._start_btns = {}   # (i, pos) → Button
 
-    # ── Rechte Spalte (Lösung) ────────────────────────────────────────────────
+        for i in range(self.n):
+            row = tk.Frame(self._start_frame, bg=BG)
+            row.pack(fill="x", pady=3)
 
-    def _build_right(self, parent):
-        tk.Label(parent, text="Lösung",
-                 bg=BG, fg=ACCENT, font=("Helvetica", 12, "bold")
-                 ).pack(anchor="w", padx=6, pady=(0, 6))
+            # Element-Label mit Farbpunkt
+            lbl = tk.Frame(row, bg=BG)
+            lbl.pack(side="left")
+            tk.Canvas(lbl, width=10, height=10, bg=BG,
+                      highlightthickness=0).pack(side="left", padx=(0, 2))
+            c = tk.Canvas(lbl, width=12, height=12, bg=BG,
+                          highlightthickness=0)
+            c.pack(side="left")
+            c.create_oval(1, 1, 11, 11, fill=self.ec(i), outline="")
+            tk.Label(lbl, text=f"E{i+1}", bg=BG, fg=self.ec(i),
+                     font=("Helvetica", 11, "bold"), width=4,
+                     anchor="w").pack(side="left")
 
-        # Visualisierungs-Canvas
-        self.viz = tk.Canvas(parent, bg=PANEL, height=220,
-                             highlightthickness=0)
-        self.viz.pack(fill="x", padx=6, pady=4)
-        self.viz.bind("<Configure>", lambda _: self._draw_state_cur())
+            # 7 Positions-Buttons
+            for pos in range(HOLES):
+                sel = (self.starts[i] == pos)
+                ecol = self.ec(i)
+                b = tk.Button(
+                    row,
+                    text=str(pos + 1),
+                    width=3,
+                    bg=ecol if sel else CARD,
+                    fg=BG if sel else FG_M,
+                    relief="flat",
+                    font=("Helvetica", 11, "bold" if sel else "normal"),
+                    pady=4, cursor="hand2",
+                    command=lambda i=i, p=pos: self._set_start(i, p))
+                b.pack(side="left", padx=2)
+                self._start_btns[(i, pos)] = b
 
-        # Schrittinfo
-        self.step_var = tk.StringVar(value="—")
-        tk.Label(parent, textvariable=self.step_var,
-                 bg=BG, fg=FG, font=("Helvetica", 11)).pack(pady=(4, 0))
+    # ── Kopplungs-Matrix ──────────────────────────────────────────────────────
+    def _build_coupling(self):
+        for w in self._coup_frame.winfo_children():
+            w.destroy()
+        self._coup_btns = {}   # (i, j) → Button
+        n = self.n
+
+        # Kopf-Zeile
+        hdr = tk.Frame(self._coup_frame, bg=BG)
+        hdr.pack(fill="x", pady=(0, 2))
+        tk.Label(hdr, text="", bg=BG, width=12).pack(side="left")
+        for j in range(n):
+            tk.Label(hdr, text=f"E{j+1}", bg=BG, fg=self.ec(j),
+                     font=("Helvetica", 10, "bold"), width=10,
+                     anchor="center").pack(side="left", padx=2)
+
+        # Matrix-Zeilen
+        for i in range(n):
+            row = tk.Frame(self._coup_frame, bg=BG)
+            row.pack(fill="x", pady=2)
+
+            lbl_text = f"E{i+1}{self.t('mover')}"
+            tk.Label(row, text=lbl_text, bg=BG, fg=self.ec(i),
+                     font=("Helvetica", 10, "bold"), width=12,
+                     anchor="w").pack(side="left")
+
+            for j in range(n):
+                if i == j:
+                    tk.Label(row, text="●", bg=BG, fg=FG_D,
+                             width=10).pack(side="left", padx=2)
+                    continue
+                state = self.coups.get((i, j), 0)
+                bg, fg, _ = CS[state]
+                texts = {0: self.t("c0"), 1: self.t("c1"), 2: self.t("c2")}
+                b = tk.Button(
+                    row,
+                    text=texts[state],
+                    width=9,
+                    bg=bg, fg=fg, relief="flat",
+                    font=("Helvetica", 9),
+                    pady=5, cursor="hand2",
+                    command=lambda i=i, j=j: self._toggle_coup(i, j))
+                b.pack(side="left", padx=2)
+                self._coup_btns[(i, j)] = b
+
+    # ── Rechte Seite ─────────────────────────────────────────────────────────
+    def _build_right(self):
+        rf = self.right_frame
+
+        self._w["sol_lbl"] = tk.Label(
+            rf, text=self.t("sol"), bg=BG, fg=FG,
+            font=("Helvetica", 13, "bold"))
+        self._w["sol_lbl"].pack(anchor="w", padx=8, pady=(4, 4))
+
+        # Visualisierung
+        self.viz = tk.Canvas(rf, bg=PANEL, height=240, highlightthickness=0)
+        self.viz.pack(fill="x", padx=8, pady=4)
+        self.viz.bind("<Configure>", lambda _: self._draw_cur())
+
+        # Schritt-Info
+        self._w["step_info"] = tk.Label(
+            rf, text="—", bg=BG, fg=FG,
+            font=("Helvetica", 11))
+        self._w["step_info"].pack(pady=(4, 0))
 
         # Navigation
-        nav = tk.Frame(parent, bg=BG)
+        nav = tk.Frame(rf, bg=BG)
         nav.pack(pady=6)
-        for symbol, cmd in [("⏮", self._go_first), ("◀", self._go_prev),
-                             ("▶", self._go_next),  ("⏭", self._go_last)]:
-            tk.Button(nav, text=symbol, command=cmd,
+        for sym, cmd in [("⏮", self._go_first), ("◀", self._go_prev),
+                         ("▶", self._go_next),  ("⏭", self._go_last)]:
+            tk.Button(nav, text=sym, command=cmd,
                       bg=CARD, fg=FG, relief="flat",
                       font=("Helvetica", 14), width=3,
-                      activebackground=ACCENT2, cursor="hand2"
+                      activebackground=ACNT, cursor="hand2"
                       ).pack(side="left", padx=3)
         self.bind("<Left>",  lambda _: self._go_prev())
         self.bind("<Right>", lambda _: self._go_next())
@@ -250,378 +440,392 @@ class App(tk.Tk):
         self.bind("<End>",   lambda _: self._go_last())
 
         # Schrittliste
-        tk.Label(parent, text="Schrittliste:", bg=BG, fg=FG_DIM,
-                 font=("Helvetica", 10)).pack(anchor="w", padx=6)
-        lf = tk.Frame(parent, bg=BG)
-        lf.pack(fill="both", expand=True, padx=6, pady=4)
-        self.lstbox = tk.Listbox(lf, bg=PANEL, fg=FG,
-                                 selectbackground=ACCENT,
-                                 font=("Courier", 10), relief="flat",
-                                 activestyle="none")
-        vsb2 = ttk.Scrollbar(lf, orient="vertical",
-                             command=self.lstbox.yview)
-        self.lstbox.configure(yscrollcommand=vsb2.set)
-        vsb2.pack(side="right", fill="y")
-        self.lstbox.pack(fill="both", expand=True)
-        self.lstbox.bind("<<ListboxSelect>>", self._on_list_select)
+        self._w["sl_lbl"] = tk.Label(
+            rf, text=self.t("step_lbl"), bg=BG, fg=FG_M,
+            font=("Helvetica", 10))
+        self._w["sl_lbl"].pack(anchor="w", padx=8)
 
-    # ── Konfiguration neu aufbauen ────────────────────────────────────────────
+        txt_frame = tk.Frame(rf, bg=BG)
+        txt_frame.pack(fill="both", expand=True, padx=8, pady=4)
 
-    def _rebuild(self, *_):
-        n = max(2, min(10, self.n_var.get()))
-        self.n_var.set(n)
+        self.step_txt = tk.Text(
+            txt_frame,
+            bg=PANEL, fg=FG,
+            font=("Courier", 13),
+            relief="flat",
+            state="disabled",
+            wrap="none",
+            selectbackground=ACNT,
+            selectforeground=FG,
+            spacing1=4, spacing3=4,
+            cursor="arrow")
+        vsb = tk.Scrollbar(txt_frame, orient="vertical",
+                           command=self.step_txt.yview, bg=BG)
+        self.step_txt.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self.step_txt.pack(fill="both", expand=True)
 
-        # Alte Werte retten
-        old = [{"holes": d["holes"].get(),
-                "start": d["start"].get(),
-                "target": d["target"].get()}
-               for d in self.elem_cfg]
+        # Text-Tags (Farben pro Element + Highlight)
+        for i in range(7):
+            self.step_txt.tag_configure(
+                f"e{i}", foreground=EC[i],
+                font=("Courier", 13, "bold"))
+        self.step_txt.tag_configure(
+            "cnt", foreground=FG_M,
+            font=("Courier", 13))
+        self.step_txt.tag_configure(
+            "dir", foreground=FG,
+            font=("Courier", 13))
+        self.step_txt.tag_configure(
+            "sel", background=ACNT,
+            foreground=FG)
+        self.step_txt.tag_configure(
+            "head", foreground=FG_M,
+            font=("Courier", 11))
 
-        self.elem_cfg = []
-        for i in range(n):
-            o = old[i] if i < len(old) else None
-            h  = o["holes"]  if o else 7
-            s  = o["start"]  if o else min(h, 4 + i % 3)
-            t  = o["target"] if o else (h + 1) // 2
-            self.elem_cfg.append({
-                "holes":  tk.IntVar(value=h),
-                "start":  tk.IntVar(value=s),
-                "target": tk.IntVar(value=t),
-            })
+        self.step_txt.bind("<Button-1>", self._on_txt_click)
 
-        new_coup: dict = {}
-        for i in range(n):
-            for j in range(n):
-                if i == j:
-                    continue
-                ov = self.coup_var.get((i, j))
-                new_coup[(i, j)] = tk.StringVar(
-                    value=(ov.get() if ov else "keine"))
-        self.coup_var = new_coup
+    # ── State-Änderungen ─────────────────────────────────────────────────────
+    def _set_n(self, n):
+        if n == self.n:
+            return
+        self.n = n
+        # Coupling-Einträge für entfernte Elemente löschen
+        self.coups = {(i, j): v for (i, j), v in self.coups.items()
+                      if i < n and j < n}
+        self._rebuild_left()
 
-        self._draw_cfg()
+    def _set_start(self, i, pos):
+        old = self.starts[i]
+        if old == pos:
+            return
+        self.starts[i] = pos
+        # Alte und neue Buttons aktualisieren
+        for p, old_pos in [(old, True), (pos, False)]:
+            btn = self._start_btns.get((i, p))
+            if btn:
+                sel = (not old_pos)  # pos=new is selected, old=False
+                ecol = self.ec(i)
+                btn.configure(
+                    bg=ecol if sel else CARD,
+                    fg=BG if sel else FG_M,
+                    font=("Helvetica", 11, "bold" if sel else "normal"))
+        # Korrektur: Buttons direkt setzen
+        for p2 in range(HOLES):
+            btn = self._start_btns.get((i, p2))
+            if btn:
+                sel = (self.starts[i] == p2)
+                ecol = self.ec(i)
+                btn.configure(
+                    bg=ecol if sel else CARD,
+                    fg=BG if sel else FG_M,
+                    font=("Helvetica", 11, "bold" if sel else "normal"))
 
-    def _draw_cfg(self):
-        for w in self.cfg_frame.winfo_children():
-            w.destroy()
-        n = len(self.elem_cfg)
+    def _toggle_coup(self, i, j):
+        self.coups[(i, j)] = (self.coups.get((i, j), 0) + 1) % 3
+        state = self.coups[(i, j)]
+        bg, fg, _ = CS[state]
+        texts = {0: self.t("c0"), 1: self.t("c1"), 2: self.t("c2")}
+        btn = self._coup_btns.get((i, j))
+        if btn:
+            btn.configure(text=texts[state], bg=bg, fg=fg)
 
-        # ── Elemente ──────────────────────────────────────────────────────────
-        sec = self._section(self.cfg_frame, "Elemente")
-        hrow = tk.Frame(sec, bg=PANEL)
-        hrow.pack(fill="x")
-        for txt, w in [("Element", 9), ("Löcher", 8),
-                        ("Start", 8), ("Ziel", 8)]:
-            tk.Label(hrow, text=txt, bg=PANEL, fg=FG_DIM,
-                     font=("Helvetica", 9), width=w).pack(side="left")
-        for i, d in enumerate(self.elem_cfg):
-            row = tk.Frame(sec, bg=PANEL)
-            row.pack(fill="x", pady=1)
-            tk.Label(row, text=f"E{i+1}", bg=PANEL,
-                     fg=ACCENT if i % 2 == 0 else ACCENT2,
-                     font=("Helvetica", 10, "bold"), width=9).pack(side="left")
-            for var, lo, hi in [(d["holes"], 3, 15),
-                                  (d["start"],  1, 15),
-                                  (d["target"], 1, 15)]:
-                tk.Spinbox(row, from_=lo, to=hi, textvariable=var, width=5,
-                           bg=CARD, fg=FG, buttonbackground=CARD,
-                           font=("Helvetica", 10), relief="flat"
-                           ).pack(side="left", padx=4)
+    def _reset(self):
+        self.n = 4
+        self.starts = [TARGET] * 7
+        self.coups  = {}
+        self.solution    = None
+        self.step_states = []
+        self.step_groups = []
+        self.cur_step    = 0
+        self.effects     = None
+        self._clear_solution()
+        self._rebuild_left()
 
-        # ── Kopplungsregeln ───────────────────────────────────────────────────
-        sec2 = self._section(self.cfg_frame,
-                             "Kopplungsregeln  (Zeile bewegt → Spalte reagiert)")
-        hrow2 = tk.Frame(sec2, bg=PANEL)
-        hrow2.pack(fill="x")
-        tk.Label(hrow2, text=" ", bg=PANEL, width=14).pack(side="left")
-        for j in range(n):
-            tk.Label(hrow2, text=f"E{j+1}", bg=PANEL, fg=FG_DIM,
-                     font=("Helvetica", 9, "bold"), width=10).pack(side="left")
-
-        for i in range(n):
-            row = tk.Frame(sec2, bg=PANEL)
-            row.pack(fill="x", pady=1)
-            tk.Label(row, text=f"E{i+1} bewegt:",
-                     bg=PANEL, fg=ACCENT if i % 2 == 0 else ACCENT2,
-                     font=("Helvetica", 10, "bold"),
-                     width=14, anchor="w").pack(side="left")
-            for j in range(n):
-                if i == j:
-                    tk.Label(row, text="  —  ", bg=PANEL, fg=FG_DIM,
-                             width=10).pack(side="left")
-                    continue
-                var = self.coup_var[(i, j)]
-                cb = ttk.Combobox(row, textvariable=var,
-                                  values=["keine", "gleich", "entgegen"],
-                                  width=9, state="readonly",
-                                  font=("Helvetica", 9))
-                cb.pack(side="left", padx=2)
-
-        # Beispiel-Button
-        bf = tk.Frame(sec2, bg=PANEL)
-        bf.pack(fill="x", pady=(10, 2))
-        tk.Button(bf, text="Beispiel laden (Original-Puzzle, 6 Elemente)",
-                  bg=CARD, fg=FG, relief="flat",
-                  font=("Helvetica", 9), cursor="hand2",
-                  command=self._load_example).pack(side="left")
-
-    def _section(self, parent, title: str) -> tk.Frame:
-        outer = tk.Frame(parent, bg=PANEL)
-        outer.pack(fill="x", padx=4, pady=5)
-        tk.Label(outer, text=title, bg=PANEL, fg=ACCENT2,
-                 font=("Helvetica", 10, "bold")).pack(anchor="w",
-                                                       padx=8, pady=(6, 2))
-        inner = tk.Frame(outer, bg=PANEL)
-        inner.pack(fill="x", padx=8, pady=(0, 8))
-        return inner
-
-    # ── Beispieldaten ─────────────────────────────────────────────────────────
-
-    def _load_example(self):
-        self.n_var.set(6)
-        self._rebuild()
-        starts  = [5, 5, 7, 5, 4, 2]
-        targets = [4, 4, 4, 4, 4, 4]
-        for i, d in enumerate(self.elem_cfg):
-            d["holes"].set(7)
-            d["start"].set(starts[i])
-            d["target"].set(targets[i])
-        rules = {
-            (0, 5): "gleich",
-            (1, 0): "gleich", (1, 2): "entgegen",
-            (2, 0): "gleich", (2, 3): "entgegen", (2, 4): "entgegen",
-            (3, 5): "gleich", (3, 1): "entgegen",
-            (5, 3): "gleich", (5, 4): "entgegen",
-        }
-        for key, var in self.coup_var.items():
-            var.set(rules.get(key, "keine"))
+    def _toggle_lang(self):
+        self.lang = "en" if self.lang == "de" else "de"
+        self.title(self.t("title"))
+        self._w["title_lbl"].configure(text=self.t("title"))
+        self._w["lang_btn"].configure(text=self.t("lang"))
+        self._w["sol_lbl"].configure(text=self.t("sol"))
+        self._w["sl_lbl"].configure(text=self.t("step_lbl"))
+        # Links komplett neu aufbauen (enthält alle übersetzten Labels)
+        self._rebuild_left()
+        # Schrittliste neu schreiben wenn Lösung vorhanden
+        if self.solution:
+            self._fill_step_list()
+            self._update_step_info()
 
     # ── Solve ─────────────────────────────────────────────────────────────────
-
     def _start_solve(self):
-        self.solve_btn.config(state="disabled", text="Berechne…")
-        self.status_var.set("Suche läuft…")
+        self._w["solve_btn"].configure(state="disabled",
+                                        text="…")
+        self._w["status"].configure(text=self.t("run"))
         threading.Thread(target=self._solve_thread, daemon=True).start()
 
     def _solve_thread(self):
         try:
-            n = len(self.elem_cfg)
-            holes   = [d["holes"].get()    for d in self.elem_cfg]
-            starts  = [d["start"].get() - 1 for d in self.elem_cfg]
-            targets = [d["target"].get() - 1 for d in self.elem_cfg]
+            n = self.n
+            starts = self.starts[:n]
 
-            # Validierung
-            for i in range(n):
-                if not (0 <= starts[i] < holes[i]):
-                    self.after(0, lambda i=i: messagebox.showerror(
-                        "Fehler",
-                        f"E{i+1}: Startposition {starts[i]+1} "
-                        f"außerhalb [1, {holes[i]}]"))
-                    return
-                if not (0 <= targets[i] < holes[i]):
-                    self.after(0, lambda i=i: messagebox.showerror(
-                        "Fehler",
-                        f"E{i+1}: Zielposition {targets[i]+1} "
-                        f"außerhalb [1, {holes[i]}]"))
-                    return
+            if all(s == TARGET for s in starts):
+                self.after(0, self._already_solved)
+                return
 
-            # Kopplungsregeln aufbauen
-            coupling: dict = {}
-            for (i, j), var in self.coup_var.items():
-                v = var.get()
-                if v == "gleich":
-                    coupling[(i, j)] = "same"
-                elif v == "entgegen":
-                    coupling[(i, j)] = "opposite"
+            coupling = {}
+            for (i, j), v in self.coups.items():
+                if i < n and j < n and v != 0:
+                    coupling[(i, j)] = v
             self.effects = build_effects(n, coupling)
 
-            # Zustandsraumgröße schätzen
-            ss = 1
-            for h in holes:
-                ss *= h
-
+            ss = HOLES ** n
             t0 = time.time()
-            if ss <= 1_200_000:
-                self.after(0, lambda: self.status_var.set(
-                    f"BFS läuft … Zustandsraum ≤ {ss:,}"))
-                sol = solve_bfs(starts, targets, self.effects, holes)
+            if ss <= 1_400_000:
+                self.after(0, lambda: self._w["status"].configure(
+                    text=f"BFS  –  {ss:,} Zustände"))
+                sol = solve_bfs(starts, self.effects, n)
                 if sol is None:
-                    self.after(0, lambda: self.status_var.set(
-                        "BFS: kein Ergebnis → A* …"))
-                    sol = solve_astar(starts, targets, self.effects, holes)
+                    self.after(0, lambda: self._w["status"].configure(
+                        text="A* …"))
+                    sol = solve_astar(starts, self.effects, n)
             else:
-                self.after(0, lambda: self.status_var.set(
-                    f"A* läuft … Zustandsraum ≈ {ss:,}"))
-                sol = solve_astar(starts, targets, self.effects, holes)
+                self.after(0, lambda: self._w["status"].configure(
+                    text=f"A*  –  {ss:,} Zustände"))
+                sol = solve_astar(starts, self.effects, n)
             elapsed = time.time() - t0
 
             if sol is None:
                 self.after(0, lambda: (
-                    self.status_var.set("Keine Lösung gefunden."),
+                    self._w["status"].configure(text=self.t("no_sol")),
                     messagebox.showwarning(
-                        "Kein Ergebnis",
-                        "Keine Lösung gefunden.\n"
-                        "Mögliche Ursachen: Puzzle unlösbar, "
-                        "Zustandsraum zu groß, oder Suchtiefe überschritten.")))
+                        self.t("warn"),
+                        self.t("no_sol") + "\n" + self.t("no_sol2"))))
                 return
 
-            # Zustände für alle Schritte berechnen
             state = tuple(starts)
             states = [state]
-            for elem, d in sol:
-                state = apply_move(state, elem, d, self.effects, holes)
+            for e, d in sol:
+                state = apply_move(state, e, d, self.effects, n)
                 states.append(state)
 
             self.solution    = sol
             self.step_states = states
-            self.holes_cfg   = holes
-            self.targets     = targets
+            self.step_groups = compress(sol)
             self.cur_step    = 0
 
-            self.after(0, lambda: self._display_solution(elapsed))
-
-        except Exception as e:
+            total = len(sol)
+            self.after(0, lambda: (
+                self._w["status"].configure(
+                    text=f"✓  {total} {self.t('steps')}  "
+                         f"({len(self.step_groups)} Gruppen)  "
+                         f"–  {elapsed:.2f} s"),
+                self._fill_step_list(),
+                self._show_step(0)))
+        except Exception as ex:
             import traceback
             tb = traceback.format_exc()
-            self.after(0, lambda: messagebox.showerror("Fehler", f"{e}\n\n{tb}"))
+            self.after(0, lambda: messagebox.showerror(
+                self.t("err"), f"{ex}\n\n{tb}"))
         finally:
-            self.after(0, lambda: self.solve_btn.config(
-                state="normal", text="▶  Lösung berechnen"))
+            self.after(0, lambda: self._w["solve_btn"].configure(
+                state="normal", text=self.t("solve")))
 
-    # ── Ergebnis anzeigen ─────────────────────────────────────────────────────
-
-    def _display_solution(self, elapsed: float):
-        total = len(self.solution)
-        alg   = "BFS" if total <= 200 else "A*"
-        self.status_var.set(
-            f"✓  {total} Schritte  |  {elapsed:.2f} s  |  {alg}")
-
-        dir_lbl = {+1: "rechts →", -1: "← links"}
-
-        self.lstbox.delete(0, "end")
-        self.lstbox.insert("end",
-            f"  Start   {self._state_str(self.step_states[0])}")
-        for i, (elem, d) in enumerate(self.solution):
-            s = self.step_states[i + 1]
-            self.lstbox.insert(
-                "end",
-                f"  {i+1:3d}.  E{elem+1} {dir_lbl[d]:<12}"
-                f"  {self._state_str(s)}")
-
+    def _already_solved(self):
+        self._w["status"].configure(text="✓  0 Schritte")
+        self._w["solve_btn"].configure(state="normal",
+                                        text=self.t("solve"))
+        self.solution    = []
+        self.step_states = [tuple(self.starts[:self.n])]
+        self.step_groups = []
+        self.cur_step    = 0
+        self._fill_step_list()
         self._show_step(0)
 
-    def _state_str(self, state: tuple) -> str:
+    # ── Schrittliste ─────────────────────────────────────────────────────────
+    def _fill_step_list(self):
+        txt = self.step_txt
+        txt.configure(state="normal")
+        txt.delete("1.0", "end")
+        n = self.n
+
+        # Kopfzeile: Ausgangszustand
+        txt.insert("end", f"  {self.t('init')}\n", "head")
+        txt.insert("end", "  " + self._state_str(self.step_states[0], n) + "\n\n",
+                   "head")
+
+        # Gruppen
+        group_starts = []   # Zeilen-Index jeder Gruppe (für Klick-Navigation)
+        cur_step = 0        # laufender Schritt-Index in step_states
+        for gi, (e, d, cnt) in enumerate(self.step_groups):
+            group_starts.append(txt.index("end"))
+            # "  3×  E2  ← links"
+            cnt_str = f"  {cnt}{self.t('x')}  "
+            e_str   = f"E{e+1}  "
+            d_str   = (self.t("left") if d == -1 else self.t("right")) + "\n"
+            txt.insert("end", cnt_str, "cnt")
+            txt.insert("end", e_str,   f"e{e}")
+            txt.insert("end", d_str,   "dir")
+            cur_step += cnt
+
+        self._group_line_starts = group_starts
+        txt.configure(state="disabled")
+
+    def _state_str(self, state, n):
         parts = []
-        for i, pos in enumerate(state):
-            h = self.holes_cfg[i]
-            row = ["o"] * h
-            row[pos] = "X"
+        for i in range(n):
+            row = list("o" * HOLES)
+            row[state[i]] = "X"
             parts.append("".join(row))
         return "  ".join(parts)
 
-    # ── Schrittanzeige ────────────────────────────────────────────────────────
-
-    def _show_step(self, idx: int):
+    # ── Schritt anzeigen ─────────────────────────────────────────────────────
+    def _show_step(self, step_idx):
         if not self.step_states:
             return
-        idx = max(0, min(idx, len(self.solution)))
-        self.cur_step = idx
+        step_idx = max(0, min(step_idx, len(self.solution)))
+        self.cur_step = step_idx
+        self._draw_cur()
+        self._update_step_info()
+        self._highlight_group(step_idx)
+
+    def _update_step_info(self):
+        idx = self.cur_step
         total = len(self.solution)
-
         if idx == 0:
-            self.step_var.set("Ausgangszustand")
+            self._w["step_info"].configure(text=self.t("init"))
         else:
-            elem, d = self.solution[idx - 1]
-            dr = "rechts →" if d == +1 else "← links"
-            self.step_var.set(f"Schritt {idx} / {total}   —   E{elem+1} nach {dr}")
+            e, d = self.solution[idx - 1]
+            dr = self.t("left") if d == -1 else self.t("right")
+            self._w["step_info"].configure(
+                text=self.t("step_n",
+                            i=idx, n=total,
+                            e=e+1, d=dr))
 
-        self.lstbox.selection_clear(0, "end")
-        self.lstbox.selection_set(idx)
-        self.lstbox.see(idx)
-        self._draw_state_cur()
-
-    def _draw_state_cur(self):
-        if not self.step_states:
+    def _highlight_group(self, step_idx):
+        """Aktive Gruppe in der Liste hervorheben."""
+        txt = self.step_txt
+        txt.tag_remove("sel", "1.0", "end")
+        if not self.step_groups or step_idx == 0:
             return
-        self._draw_state(self.step_states[self.cur_step])
+        # Welche Gruppe enthält step_idx?
+        acc = 0
+        for gi, (e, d, cnt) in enumerate(self.step_groups):
+            acc += cnt
+            if step_idx <= acc:
+                if gi < len(self._group_line_starts):
+                    line = self._group_line_starts[gi]
+                    end  = f"{line.split('.')[0]}.end"
+                    txt.tag_add("sel", line, end)
+                    txt.see(line)
+                break
 
-    def _draw_state(self, state: tuple):
+    def _draw_cur(self):
+        if self.step_states:
+            self._draw_state(self.step_states[self.cur_step])
+
+    def _draw_state(self, state):
         cv = self.viz
         cv.delete("all")
         cv.update_idletasks()
-        W  = cv.winfo_width() or 600
-        n  = len(state)
-        hl = self.holes_cfg
-        tg = self.targets
+        W  = cv.winfo_width() or 560
+        n  = self.n
 
-        ROW_H   = 34
-        PAD_Y   = 14
-        PAD_X   = 10
-        LBL_W   = 46          # Platz für "E10 :"
-        MAX_HOLE_W = 26
+        ROW   = 36
+        PAD_Y = 12
+        LBL_W = 52
+        PAD_X = 10
+        MAX_R = 12
 
-        max_h   = max(hl) if hl else 7
-        hole_w  = min(MAX_HOLE_W, (W - PAD_X * 2 - LBL_W - 50) // max_h)
-        hole_gap = hole_w + 3
-        r       = hole_w // 2
+        hole_w = min(MAX_R * 2, (W - PAD_X * 2 - LBL_W - 40) // HOLES)
+        gap    = hole_w + 4
+        r      = hole_w // 2
 
-        total_h = PAD_Y * 2 + n * ROW_H
-        cv.config(height=max(180, total_h))
+        total_h = PAD_Y * 2 + n * ROW
+        cv.configure(height=max(180, total_h))
 
         for i in range(n):
-            y    = PAD_Y + i * ROW_H + ROW_H // 2
+            y    = PAD_Y + i * ROW + ROW // 2
             pos  = state[i]
-            h    = hl[i]
-            tgt  = tg[i]
-            done = (pos == tgt)
+            ec   = self.ec(i)
+            done = (pos == TARGET)
 
-            lbl_color = PIN_OK if done else (ACCENT if i % 2 == 0 else ACCENT2)
+            # Label
             cv.create_text(PAD_X + 4, y,
-                           text=f"E{i+1}:", fill=lbl_color,
-                           font=("Helvetica", 10, "bold"), anchor="w")
+                           text=f"E{i+1}",
+                           fill=ec,
+                           font=("Helvetica", 11, "bold"),
+                           anchor="w")
 
             ox = PAD_X + LBL_W
-            for j in range(h):
-                cx = ox + j * hole_gap
+            for j in range(HOLES):
+                cx = ox + j * gap
                 is_pin    = (j == pos)
-                is_target = (j == tgt)
+                is_target = (j == TARGET)
 
                 if is_pin:
-                    fill  = PIN_OK if done else PIN_WRONG
+                    fill  = "#44cc88" if done else ec
                     out   = fill
                     ri    = r
                 elif is_target:
                     fill  = PANEL
-                    out   = TARGET_OUT
+                    out   = "#5a6080"
                     ri    = r - 1
                 else:
-                    fill  = HOLE_FILL
-                    out   = HOLE_FILL
-                    ri    = r - 2
+                    fill  = CARD
+                    out   = CARD
+                    ri    = r - 3
 
-                cv.create_oval(cx - ri, y - ri, cx + ri, y + ri,
-                               fill=fill, outline=out, width=2 if is_target and not is_pin else 1)
+                cv.create_oval(cx - ri, y - ri,
+                               cx + ri, y + ri,
+                               fill=fill, outline=out,
+                               width=2 if is_target and not is_pin else 1)
 
-            # Positionstext
-            cv.create_text(ox + h * hole_gap + 8, y,
-                           text=f"{pos+1}/{h}",
-                           fill=FG_DIM, font=("Helvetica", 9), anchor="w")
+            # Pos-Text
+            cv.create_text(ox + HOLES * gap + 6, y,
+                           text=f"{pos+1}",
+                           fill=FG_M if not done else "#44cc88",
+                           font=("Helvetica", 10),
+                           anchor="w")
+
+    def _clear_solution(self):
+        self._w["step_info"].configure(text="—")
+        txt = self.step_txt
+        txt.configure(state="normal")
+        txt.delete("1.0", "end")
+        txt.configure(state="disabled")
+        self.viz.delete("all")
+
+    # ── Klick in Schrittliste ─────────────────────────────────────────────────
+    def _on_txt_click(self, event):
+        if not self.step_groups:
+            return
+        idx = self.step_txt.index(f"@{event.x},{event.y}")
+        row = int(idx.split(".")[0])
+        # Finde Gruppe, deren Zeile ≤ row
+        chosen = 0
+        acc = 0
+        for gi, (e, d, cnt) in enumerate(self.step_groups):
+            if gi < len(self._group_line_starts):
+                ln = int(self._group_line_starts[gi].split(".")[0])
+                if ln <= row:
+                    acc += cnt
+                    chosen = acc
+        self._show_step(chosen)
 
     # ── Navigation ────────────────────────────────────────────────────────────
-
     def _go_first(self): self._show_step(0)
-    def _go_last(self):  self._show_step(len(self.solution) if self.solution else 0)
-    def _go_prev(self):  self._show_step(self.cur_step - 1)
-    def _go_next(self):  self._show_step(self.cur_step + 1)
+    def _go_last(self):
+        if self.solution is not None:
+            self._show_step(len(self.solution))
+    def _go_prev(self):
+        if self.cur_step > 0:
+            self._show_step(self.cur_step - 1)
+    def _go_next(self):
+        if self.solution and self.cur_step < len(self.solution):
+            self._show_step(self.cur_step + 1)
 
-    def _on_list_select(self, _):
-        sel = self.lstbox.curselection()
-        if sel:
-            self._show_step(sel[0])
 
-
-# ── Einstiegspunkt ────────────────────────────────────────────────────────────
-
+# ─── Start ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app = App()
     app.mainloop()
