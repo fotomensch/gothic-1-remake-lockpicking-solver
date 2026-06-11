@@ -175,7 +175,7 @@ class App(tk.Tk):
         self.effects      = None
 
         # Widget-Referenzen für Sprachumschaltung
-        self._w = {}
+        self._widgets = {}
 
         self.title(self.t("title"))
         self.configure(bg=BG)
@@ -199,18 +199,18 @@ class App(tk.Tk):
         # ── Kopfzeile ─────────────────────────────────────────────────────────
         hdr = tk.Frame(self, bg=BG)
         hdr.pack(fill="x", padx=14, pady=(10, 0))
-        self._w["title_lbl"] = tk.Label(
+        self._widgets["title_lbl"] = tk.Label(
             hdr, text=self.t("title"), bg=BG, fg=FG,
             font=("Helvetica", 17, "bold"))
-        self._w["title_lbl"].pack(side="left")
+        self._widgets["title_lbl"].pack(side="left")
 
-        self._w["lang_btn"] = tk.Button(
+        self._widgets["lang_btn"] = tk.Button(
             hdr, text=self.t("lang"), bg=CARD, fg=FG_M,
             relief="flat", font=("Helvetica", 10, "bold"),
             padx=10, pady=4, cursor="hand2",
             activebackground=ACNT, activeforeground=FG,
             command=self._toggle_lang)
-        self._w["lang_btn"].pack(side="right")
+        self._widgets["lang_btn"].pack(side="right")
 
         sep = tk.Frame(self, bg=FG_D, height=1)
         sep.pack(fill="x", padx=14, pady=6)
@@ -256,10 +256,10 @@ class App(tk.Tk):
         PAD = 12
 
         # ── Abschnitt: Anzahl Elemente ────────────────────────────────────────
-        self._w["n_lbl"] = self._section_head(inner, "n_elem")
+        self._widgets["n_lbl"] = self._section_head(inner, "n_elem")
         row = tk.Frame(inner, bg=BG)
         row.pack(fill="x", padx=PAD, pady=(0, 10))
-        self._w["n_btns"] = []
+        self._widgets["n_btns"] = []
         for v in (4, 5, 6, 7):
             b = tk.Button(
                 row, text=str(v), width=5,
@@ -269,16 +269,16 @@ class App(tk.Tk):
                 padx=8, pady=6, cursor="hand2",
                 command=lambda v=v: self._set_n(v))
             b.pack(side="left", padx=4)
-            self._w["n_btns"].append((v, b))
+            self._widgets["n_btns"].append((v, b))
 
         # ── Abschnitt: Startposition ──────────────────────────────────────────
-        self._w["sp_lbl"] = self._section_head(inner, "start_pos")
+        self._widgets["sp_lbl"] = self._section_head(inner, "start_pos")
         self._start_frame = tk.Frame(inner, bg=BG)
         self._start_frame.pack(fill="x", padx=PAD, pady=(0, 10))
         self._build_start_rows()
 
         # ── Abschnitt: Kopplungsregeln ────────────────────────────────────────
-        self._w["cp_lbl"] = self._section_head(inner, "coupling")
+        self._widgets["cp_lbl"] = self._section_head(inner, "coupling")
         self._coup_frame = tk.Frame(inner, bg=BG)
         self._coup_frame.pack(fill="x", padx=PAD, pady=(0, 10))
         self._build_coupling()
@@ -287,26 +287,26 @@ class App(tk.Tk):
         btm = tk.Frame(inner, bg=BG)
         btm.pack(fill="x", padx=PAD, pady=(6, 4))
 
-        self._w["reset_btn"] = tk.Button(
+        self._widgets["reset_btn"] = tk.Button(
             btm, text=self.t("reset"),
             bg=CARD, fg=FG_M, relief="flat",
             font=("Helvetica", 11), padx=14, pady=8, cursor="hand2",
             activebackground="#3a1818", activeforeground=ACNT,
             command=self._reset)
-        self._w["reset_btn"].pack(side="left", padx=(0, 8))
+        self._widgets["reset_btn"].pack(side="left", padx=(0, 8))
 
-        self._w["solve_btn"] = tk.Button(
+        self._widgets["solve_btn"] = tk.Button(
             btm, text=self.t("solve"),
             bg=ACNT, fg=FG, relief="flat",
             font=("Helvetica", 12, "bold"), padx=20, pady=8, cursor="hand2",
             activebackground="#c73050",
             command=self._start_solve)
-        self._w["solve_btn"].pack(side="left", fill="x", expand=True)
+        self._widgets["solve_btn"].pack(side="left", fill="x", expand=True)
 
-        self._w["status"] = tk.Label(
+        self._widgets["status"] = tk.Label(
             inner, text=self.t("ready"), bg=BG, fg=FG_M,
             font=("Helvetica", 9))
-        self._w["status"].pack(anchor="w", padx=PAD, pady=(2, 8))
+        self._widgets["status"].pack(anchor="w", padx=PAD, pady=(2, 8))
 
     def _section_head(self, parent, key):
         f = tk.Frame(parent, bg=BG)
@@ -408,10 +408,10 @@ class App(tk.Tk):
     def _build_right(self):
         rf = self.right_frame
 
-        self._w["sol_lbl"] = tk.Label(
+        self._widgets["sol_lbl"] = tk.Label(
             rf, text=self.t("sol"), bg=BG, fg=FG,
             font=("Helvetica", 13, "bold"))
-        self._w["sol_lbl"].pack(anchor="w", padx=8, pady=(4, 4))
+        self._widgets["sol_lbl"].pack(anchor="w", padx=8, pady=(4, 4))
 
         # Visualisierung
         self.viz = tk.Canvas(rf, bg=PANEL, height=240, highlightthickness=0)
@@ -419,10 +419,10 @@ class App(tk.Tk):
         self.viz.bind("<Configure>", lambda _: self._draw_cur())
 
         # Schritt-Info
-        self._w["step_info"] = tk.Label(
+        self._widgets["step_info"] = tk.Label(
             rf, text="—", bg=BG, fg=FG,
             font=("Helvetica", 11))
-        self._w["step_info"].pack(pady=(4, 0))
+        self._widgets["step_info"].pack(pady=(4, 0))
 
         # Navigation
         nav = tk.Frame(rf, bg=BG)
@@ -440,10 +440,10 @@ class App(tk.Tk):
         self.bind("<End>",   lambda _: self._go_last())
 
         # Schrittliste
-        self._w["sl_lbl"] = tk.Label(
+        self._widgets["sl_lbl"] = tk.Label(
             rf, text=self.t("step_lbl"), bg=BG, fg=FG_M,
             font=("Helvetica", 10))
-        self._w["sl_lbl"].pack(anchor="w", padx=8)
+        self._widgets["sl_lbl"].pack(anchor="w", padx=8)
 
         txt_frame = tk.Frame(rf, bg=BG)
         txt_frame.pack(fill="both", expand=True, padx=8, pady=4)
@@ -545,10 +545,10 @@ class App(tk.Tk):
     def _toggle_lang(self):
         self.lang = "en" if self.lang == "de" else "de"
         self.title(self.t("title"))
-        self._w["title_lbl"].configure(text=self.t("title"))
-        self._w["lang_btn"].configure(text=self.t("lang"))
-        self._w["sol_lbl"].configure(text=self.t("sol"))
-        self._w["sl_lbl"].configure(text=self.t("step_lbl"))
+        self._widgets["title_lbl"].configure(text=self.t("title"))
+        self._widgets["lang_btn"].configure(text=self.t("lang"))
+        self._widgets["sol_lbl"].configure(text=self.t("sol"))
+        self._widgets["sl_lbl"].configure(text=self.t("step_lbl"))
         # Links komplett neu aufbauen (enthält alle übersetzten Labels)
         self._rebuild_left()
         # Schrittliste neu schreiben wenn Lösung vorhanden
@@ -558,9 +558,9 @@ class App(tk.Tk):
 
     # ── Solve ─────────────────────────────────────────────────────────────────
     def _start_solve(self):
-        self._w["solve_btn"].configure(state="disabled",
+        self._widgets["solve_btn"].configure(state="disabled",
                                         text="…")
-        self._w["status"].configure(text=self.t("run"))
+        self._widgets["status"].configure(text=self.t("run"))
         threading.Thread(target=self._solve_thread, daemon=True).start()
 
     def _solve_thread(self):
@@ -581,22 +581,22 @@ class App(tk.Tk):
             ss = HOLES ** n
             t0 = time.time()
             if ss <= 1_400_000:
-                self.after(0, lambda: self._w["status"].configure(
+                self.after(0, lambda: self._widgets["status"].configure(
                     text=f"BFS  –  {ss:,} Zustände"))
                 sol = solve_bfs(starts, self.effects, n)
                 if sol is None:
-                    self.after(0, lambda: self._w["status"].configure(
+                    self.after(0, lambda: self._widgets["status"].configure(
                         text="A* …"))
                     sol = solve_astar(starts, self.effects, n)
             else:
-                self.after(0, lambda: self._w["status"].configure(
+                self.after(0, lambda: self._widgets["status"].configure(
                     text=f"A*  –  {ss:,} Zustände"))
                 sol = solve_astar(starts, self.effects, n)
             elapsed = time.time() - t0
 
             if sol is None:
                 self.after(0, lambda: (
-                    self._w["status"].configure(text=self.t("no_sol")),
+                    self._widgets["status"].configure(text=self.t("no_sol")),
                     messagebox.showwarning(
                         self.t("warn"),
                         self.t("no_sol") + "\n" + self.t("no_sol2"))))
@@ -615,7 +615,7 @@ class App(tk.Tk):
 
             total = len(sol)
             self.after(0, lambda: (
-                self._w["status"].configure(
+                self._widgets["status"].configure(
                     text=f"✓  {total} {self.t('steps')}  "
                          f"({len(self.step_groups)} Gruppen)  "
                          f"–  {elapsed:.2f} s"),
@@ -627,12 +627,12 @@ class App(tk.Tk):
             self.after(0, lambda: messagebox.showerror(
                 self.t("err"), f"{ex}\n\n{tb}"))
         finally:
-            self.after(0, lambda: self._w["solve_btn"].configure(
+            self.after(0, lambda: self._widgets["solve_btn"].configure(
                 state="normal", text=self.t("solve")))
 
     def _already_solved(self):
-        self._w["status"].configure(text="✓  0 Schritte")
-        self._w["solve_btn"].configure(state="normal",
+        self._widgets["status"].configure(text="✓  0 Schritte")
+        self._widgets["solve_btn"].configure(state="normal",
                                         text=self.t("solve"))
         self.solution    = []
         self.step_states = [tuple(self.starts[:self.n])]
@@ -692,11 +692,11 @@ class App(tk.Tk):
         idx = self.cur_step
         total = len(self.solution)
         if idx == 0:
-            self._w["step_info"].configure(text=self.t("init"))
+            self._widgets["step_info"].configure(text=self.t("init"))
         else:
             e, d = self.solution[idx - 1]
             dr = self.t("left") if d == -1 else self.t("right")
-            self._w["step_info"].configure(
+            self._widgets["step_info"].configure(
                 text=self.t("step_n",
                             i=idx, n=total,
                             e=e+1, d=dr))
@@ -788,7 +788,7 @@ class App(tk.Tk):
                            anchor="w")
 
     def _clear_solution(self):
-        self._w["step_info"].configure(text="—")
+        self._widgets["step_info"].configure(text="—")
         txt = self.step_txt
         txt.configure(state="normal")
         txt.delete("1.0", "end")
