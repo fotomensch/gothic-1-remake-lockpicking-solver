@@ -144,19 +144,37 @@ def solve_astar(start, ef, n, mx=800_000):
     return None
 
 def compress(sol):
-    """Aufeinanderfolgende gleiche Züge zusammenfassen."""
+    """Zweistufige Komprimierung.
+    Stufe 1: gleiche Richtung  → Richtungsgruppe
+    Stufe 2: gleiche aufeinanderfolgende Elemente → (elem, count)
+    Gibt zurück: [(direction, [(elem, count), ...]), ...]
+    """
     if not sol:
         return []
-    out = []
-    ce, cd, cnt = sol[0][0], sol[0][1], 1
+    # Stufe 1
+    dir_groups = []
+    cur_d, cur_elems = sol[0][1], [sol[0][0]]
     for e, d in sol[1:]:
-        if e == ce and d == cd:
-            cnt += 1
+        if d == cur_d:
+            cur_elems.append(e)
         else:
-            out.append((ce, cd, cnt))
-            ce, cd, cnt = e, d, 1
-    out.append((ce, cd, cnt))
-    return out
+            dir_groups.append((cur_d, cur_elems))
+            cur_d, cur_elems = d, [e]
+    dir_groups.append((cur_d, cur_elems))
+    # Stufe 2
+    result = []
+    for d, elems in dir_groups:
+        sub = []
+        ce, cnt = elems[0], 1
+        for e in elems[1:]:
+            if e == ce:
+                cnt += 1
+            else:
+                sub.append((ce, cnt))
+                ce, cnt = e, 1
+        sub.append((ce, cnt))
+        result.append((d, sub))
+    return result
 
 
 # ─── App ──────────────────────────────────────────────────────────────────────
@@ -165,7 +183,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.lang    = "de"
-        self.n       = 4                        # Anzahl Elemente
+        self.n       = 6                        # Anzahl Elemente
         self.starts  = [TARGET] * 7             # 0-basiert, default Mitte
         self.coups   = {}                       # (i,j) → 0|1|2
         self.solution     = None
@@ -363,46 +381,84 @@ class App(tk.Tk):
     def _build_coupling(self):
         for w in self._coup_frame.winfo_children():
             w.destroy()
-        self._coup_btns = {}   # (i, j) → Button
+        self._coup_same = {}
+        self._coup_opp  = {}
         n = self.n
 
-        # Kopf-Zeile
-        hdr = tk.Frame(self._coup_frame, bg=BG)
-        hdr.pack(fill="x", pady=(0, 2))
-        tk.Label(hdr, text="", bg=BG, width=12).pack(side="left")
+        # Grid-Frame: exakte Spaltenausrichtung
+        g = tk.Frame(self._coup_frame, bg=BG)
+        g.pack(fill="x", anchor="w")
+
+        # Spalten-Schema:
+        #   0          = Zeilenbeschriftung
+        #   1 + j*3    = ↑↑ Button für Element j
+        #   2 + j*3    = ↑↓ Button für Element j
+        #   3 + j*3    = Trennlinie  (außer nach letzter Spalte)
+        LBL_COL = 120   # px für Beschriftungsspalte
+        BTN_W   = 34    # px pro Button-Spalte
+        SEP_W   = 14    # px für Trennlinie-Spalte
+
+        g.columnconfigure(0, minsize=LBL_COL)
         for j in range(n):
-            tk.Label(hdr, text=f"E{j+1}", bg=BG, fg=self.ec(j),
-                     font=("Helvetica", 10, "bold"), width=10,
-                     anchor="center").pack(side="left", padx=2)
+            g.columnconfigure(1 + j*3,     minsize=BTN_W)
+            g.columnconfigure(2 + j*3,     minsize=BTN_W)
+            g.columnconfigure(3 + j*3,     minsize=SEP_W)
 
-        # Matrix-Zeilen
+        # ── Kopfzeile: Element-Labels ──────────────────────────────────────────
+        for j in range(n):
+            tk.Label(g, text=f"E{j+1}", bg=BG, fg=self.ec(j),
+                     font=("Helvetica", 10, "bold"), anchor="center"
+                     ).grid(row=0, column=1 + j*3, columnspan=2,
+                            sticky="ew", pady=(0, 6))
+            # Trennlinie als schmaler Frame über alle Zeilen
+            sep_col = 3 + j*3
+            sep_h   = n + 1          # Anzahl Zeilen
+            sep_frm = tk.Frame(g, bg=FG_D, width=1)
+            sep_frm.grid(row=0, column=sep_col, rowspan=sep_h,
+                         sticky="ns", padx=6)
+
+        # ── Matrix-Zeilen ──────────────────────────────────────────────────────
         for i in range(n):
-            row = tk.Frame(self._coup_frame, bg=BG)
-            row.pack(fill="x", pady=2)
-
-            lbl_text = f"E{i+1}{self.t('mover')}"
-            tk.Label(row, text=lbl_text, bg=BG, fg=self.ec(i),
-                     font=("Helvetica", 10, "bold"), width=12,
-                     anchor="w").pack(side="left")
+            lbl = f"E{i+1}{self.t('mover')}"
+            tk.Label(g, text=lbl, bg=BG, fg=self.ec(i),
+                     font=("Helvetica", 10, "bold"), anchor="w"
+                     ).grid(row=i+1, column=0, sticky="w",
+                            padx=(2, 8), pady=2)
 
             for j in range(n):
                 if i == j:
-                    tk.Label(row, text="●", bg=BG, fg=FG_D,
-                             width=10).pack(side="left", padx=2)
+                    tk.Label(g, text="●", bg=BG, fg=FG_D,
+                             font=("Helvetica", 10)
+                             ).grid(row=i+1, column=1 + j*3,
+                                    columnspan=2, sticky="ew")
                     continue
-                state = self.coups.get((i, j), 0)
-                bg, fg, _ = CS[state]
-                texts = {0: self.t("c0"), 1: self.t("c1"), 2: self.t("c2")}
-                b = tk.Button(
-                    row,
-                    text=texts[state],
-                    width=9,
-                    bg=bg, fg=fg, relief="flat",
-                    font=("Helvetica", 9),
-                    pady=5, cursor="hand2",
-                    command=lambda i=i, j=j: self._toggle_coup(i, j))
-                b.pack(side="left", padx=2)
-                self._coup_btns[(i, j)] = b
+
+                state  = self.coups.get((i, j), 0)
+                active1 = state == 1
+                active2 = state == 2
+
+                b_same = tk.Button(
+                    g, text="↑↑",
+                    bg="#163325" if active1 else CARD,
+                    fg="#3dcc7e" if active1 else FG_D,
+                    relief="flat", font=("Helvetica", 10),
+                    pady=4, cursor="hand2",
+                    command=lambda i=i, j=j: self._set_coup(i, j, 1))
+                b_same.grid(row=i+1, column=1 + j*3,
+                            padx=(2, 1), pady=1, sticky="ew")
+
+                b_opp = tk.Button(
+                    g, text="↑↓",
+                    bg="#301414" if active2 else CARD,
+                    fg="#e94560" if active2 else FG_D,
+                    relief="flat", font=("Helvetica", 10),
+                    pady=4, cursor="hand2",
+                    command=lambda i=i, j=j: self._set_coup(i, j, 2))
+                b_opp.grid(row=i+1, column=2 + j*3,
+                           padx=(1, 2), pady=1, sticky="ew")
+
+                self._coup_same[(i, j)] = b_same
+                self._coup_opp[(i, j)]  = b_opp
 
     # ── Rechte Seite ─────────────────────────────────────────────────────────
     def _build_right(self):
@@ -486,6 +542,11 @@ class App(tk.Tk):
         self.step_txt.bind("<Button-1>", self._on_txt_click)
 
     # ── State-Änderungen ─────────────────────────────────────────────────────
+    def _left_needed_width(self):
+        """Mindestbreite für linken Bereich je nach Elementanzahl."""
+        # Label-Spalte 130 + pro Element 2 Buttons à 34px + Trenner 12px
+        return 130 + self.n * (34 * 2 + 12) + 40
+
     def _set_n(self, n):
         if n == self.n:
             return
@@ -494,6 +555,16 @@ class App(tk.Tk):
         self.coups = {(i, j): v for (i, j), v in self.coups.items()
                       if i < n and j < n}
         self._rebuild_left()
+        # Linke Seite automatisch auf benötigte Breite setzen
+        try:
+            needed = max(440, min(self._left_needed_width(), 800))
+            self.pane.paneconfigure(self.left_outer, minsize=needed)
+            # Sashposition aktualisieren
+            total = self.pane.winfo_width()
+            if total > needed + 300:
+                self.pane.sash_place(0, needed, 0)
+        except Exception:
+            pass
 
     def _set_start(self, i, pos):
         old = self.starts[i]
@@ -521,17 +592,28 @@ class App(tk.Tk):
                     fg=BG if sel else FG_M,
                     font=("Helvetica", 11, "bold" if sel else "normal"))
 
-    def _toggle_coup(self, i, j):
-        self.coups[(i, j)] = (self.coups.get((i, j), 0) + 1) % 3
-        state = self.coups[(i, j)]
-        bg, fg, _ = CS[state]
-        texts = {0: self.t("c0"), 1: self.t("c1"), 2: self.t("c2")}
-        btn = self._coup_btns.get((i, j))
-        if btn:
-            btn.configure(text=texts[state], bg=bg, fg=fg)
+    def _set_coup(self, i, j, target):
+        """target=1 (gleich) oder 2 (entgegen).
+        Nochmals klicken → deaktiviert beide."""
+        current = self.coups.get((i, j), 0)
+        self.coups[(i, j)] = 0 if current == target else target
+        self._refresh_coup_btns(i, j)
+
+    def _refresh_coup_btns(self, i, j):
+        state  = self.coups.get((i, j), 0)
+        b_same = self._coup_same.get((i, j))
+        b_opp  = self._coup_opp.get((i, j))
+        if b_same:
+            b_same.configure(
+                bg="#163325" if state == 1 else CARD,
+                fg="#3dcc7e" if state == 1 else FG_D)
+        if b_opp:
+            b_opp.configure(
+                bg="#301414" if state == 2 else CARD,
+                fg="#e94560" if state == 2 else FG_D)
 
     def _reset(self):
-        self.n = 4
+        self.n = 6
         self.starts = [TARGET] * 7
         self.coups  = {}
         self.solution    = None
@@ -646,28 +728,30 @@ class App(tk.Tk):
         txt = self.step_txt
         txt.configure(state="normal")
         txt.delete("1.0", "end")
-        n = self.n
 
-        # Kopfzeile: Ausgangszustand
+        # Kopfzeile
         txt.insert("end", f"  {self.t('init')}\n", "head")
-        txt.insert("end", "  " + self._state_str(self.step_states[0], n) + "\n\n",
-                   "head")
 
-        # Gruppen
-        group_starts = []   # Zeilen-Index jeder Gruppe (für Klick-Navigation)
-        cur_step = 0        # laufender Schritt-Index in step_states
-        for gi, (e, d, cnt) in enumerate(self.step_groups):
-            group_starts.append(txt.index("end"))
-            # "  3×  E2  ← links"
-            cnt_str = f"  {cnt}{self.t('x')}  "
-            e_str   = f"E{e+1}  "
-            d_str   = (self.t("left") if d == -1 else self.t("right")) + "\n"
-            txt.insert("end", cnt_str, "cnt")
-            txt.insert("end", e_str,   f"e{e}")
-            txt.insert("end", d_str,   "dir")
-            cur_step += cnt
+        # Gruppen  –  format: (direction, [(elem, count), ...])
+        self._group_step_ends   = []
+        self._group_line_starts = []
+        acc = 0
 
-        self._group_line_starts = group_starts
+        for d, sub_groups in self.step_groups:
+            self._group_line_starts.append(txt.index("end"))
+            acc += sum(cnt for _, cnt in sub_groups)
+            self._group_step_ends.append(acc)
+
+            txt.insert("end", "  ", "cnt")   # Einrückung
+
+            for e, cnt in sub_groups:
+                if cnt > 1:
+                    txt.insert("end", f"{cnt}\u00d7 ", "cnt")  # "6× "
+                txt.insert("end", f"E{e+1} ", f"e{e}")
+
+            d_str = ("L" if d == -1 else "R") + "\n"
+            txt.insert("end", d_str, "dir")
+
         txt.configure(state="disabled")
 
     def _state_str(self, state, n):
@@ -702,20 +786,19 @@ class App(tk.Tk):
                             e=e+1, d=dr))
 
     def _highlight_group(self, step_idx):
-        """Aktive Gruppe in der Liste hervorheben."""
+        """Zeile der aktiven Gruppe hervorheben und sichtbar scrollen."""
         txt = self.step_txt
         txt.tag_remove("sel", "1.0", "end")
         if not self.step_groups or step_idx == 0:
             return
-        # Welche Gruppe enthält step_idx?
-        acc = 0
-        for gi, (e, d, cnt) in enumerate(self.step_groups):
-            acc += cnt
-            if step_idx <= acc:
+        # Gruppe finden, in der step_idx liegt
+        for gi, end in enumerate(self._group_step_ends):
+            prev = self._group_step_ends[gi - 1] if gi > 0 else 0
+            if prev < step_idx <= end:
                 if gi < len(self._group_line_starts):
                     line = self._group_line_starts[gi]
-                    end  = f"{line.split('.')[0]}.end"
-                    txt.tag_add("sel", line, end)
+                    end_pos = f"{line.split('.')[0]}.end"
+                    txt.tag_add("sel", line, end_pos)
                     txt.see(line)
                 break
 
@@ -797,20 +880,18 @@ class App(tk.Tk):
 
     # ── Klick in Schrittliste ─────────────────────────────────────────────────
     def _on_txt_click(self, event):
-        if not self.step_groups:
+        if not self.step_groups or not self._group_step_ends:
             return
-        idx = self.step_txt.index(f"@{event.x},{event.y}")
-        row = int(idx.split(".")[0])
-        # Finde Gruppe, deren Zeile ≤ row
-        chosen = 0
-        acc = 0
-        for gi, (e, d, cnt) in enumerate(self.step_groups):
+        clicked_row = int(self.step_txt.index(f"@{event.x},{event.y}").split(".")[0])
+        # Letzte Gruppe suchen, deren Startzeile ≤ geklickte Zeile
+        chosen_step = 0
+        for gi in range(len(self.step_groups)):
             if gi < len(self._group_line_starts):
                 ln = int(self._group_line_starts[gi].split(".")[0])
-                if ln <= row:
-                    acc += cnt
-                    chosen = acc
-        self._show_step(chosen)
+                if ln <= clicked_row:
+                    chosen_step = self._group_step_ends[gi]
+        if chosen_step:
+            self._show_step(chosen_step)
 
     # ── Navigation ────────────────────────────────────────────────────────────
     def _go_first(self): self._show_step(0)
